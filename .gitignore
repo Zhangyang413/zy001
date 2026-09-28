@@ -1,0 +1,47 @@
+# ===== 团结引擎 / Unity 工程忽略规则 =====
+/[Ll]ibrary/
+/[Tt]emp/
+/[Oo]bj/
+/[Bb]uild/
+/[Bb]uilds/
+/[Ll]ogs/
+/[Uu]ser[Ss]ettings/
+/[Mm]emoryCaptures/
+/[Rr]ecordings/
+
+# 编辑器 / IDE 自动生成的文件
+*.csproj
+*.unityproj
+*.sln
+*.suo
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.opendb
+*.VC.db
+*.VC.opendb
+.vs/
+.vscode/
+.idea/
+.vsconfig
+UpgradeLog.htm
+*.stackdump
+crashlytics-build.properties
+sysinfo.txt
+
+# 打包 / 导出产物
+*.apk
+*.aab
+*.ipa
+*.app
+*.unitypackage
+*.unitypackage.meta
+/[Ee]xportedObj/
+/[Aa]ssets/AssetStoreTools*
+
+# AI 助手工具目录（Codely），与工程内容无关
+.codely-cli/
+.codely.packages/
+.codelyignore
