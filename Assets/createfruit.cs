@@ -17,6 +17,8 @@ using UnityEngine;
 ///     再判“步数用尽 → 失败”；
 ///   · SampleScene 里序列化的 n/a/start/m 就是“示例关卡”的固定配置；
 ///     难度 1/2/3 由 LevelGenerator 随机构造（物品数量与位置随机、人物位置随机）。
+///   · 挑战模式（入口界面开关 challengeMode）：进入关卡先点 Start 开始计时、
+///     最优解提示被禁用、失败不能重试本关，并按难度用 PlayerPrefs 记录最佳用时；
 ///
 /// 界面（入口界面 / HUD / 结算）全部在 GameHud.cs 中绘制，本脚本只负责数据与规则。
 /// </summary>
@@ -105,6 +107,9 @@ public class createfruit : MonoBehaviour
     [Tooltip("游戏一开始是否先显示入口界面")]
     public bool startInMenu = true;
 
+    [Tooltip("挑战模式（入口界面可开关）：进入关卡要先点 Start 开始计时、最优解提示被禁用、失败不能重试本关，并按难度记录最佳用时")]
+    public bool challengeMode = false;
+
     // ============================ 运行时状态（界面只读） ============================
     [Header("运行时状态")]
     public Phase phase = Phase.Menu;
@@ -125,6 +130,10 @@ public class createfruit : MonoBehaviour
     public string errorText = "";
     public int difficultyIndex = -1;        // -1 = 示例关卡，>=0 = difficulties 的下标
     public bool showHint;
+    public bool challengeActive;            // 挑战模式：本关是否已经开始计时
+    public float challengeTime;             // 挑战模式：本关已用时（秒）
+    public float challengeBest;             // 挑战模式：当前难度的最佳用时（秒），NoRecord 表示还没有记录
+    public bool challengeNewRecord;         // 挑战模式：本次是否破了纪录
     [NonSerialized] public MinMovesSolver.MovePlan plan;
 
     private readonly Dictionary<int, FruitItem> fruitsByIndex = new Dictionary<int, FruitItem>();
@@ -155,6 +164,9 @@ public class createfruit : MonoBehaviour
             return;
         }
 
+        // 挑战模式：点 Start 之后才开始累计用时
+        if (challengeMode && challengeActive && !gameOver) challengeTime += Time.unscaledDeltaTime;
+
         if (Input.GetKeyDown(KeyCode.Escape))
         {
             EnterMenu();
@@ -163,23 +175,50 @@ public class createfruit : MonoBehaviour
 
         if (gameOver)
         {
-            // 结算界面：空格 / R 重来本关，N 换一关（仅随机关卡），H 看提示
-            if (Input.GetKeyDown(KeyCode.Space) || Input.GetKeyDown(KeyCode.R))
-            {
-                BuildLevel();
-                return;
-            }
-            if (Input.GetKeyDown(KeyCode.N) && difficultyIndex >= 0)
-            {
-                StartDifficulty(difficultyIndex);
-                return;
-            }
-            if (Input.GetKeyDown(KeyCode.H)) showHint = !showHint;
+            HandleGameOverKeys();
             return;
         }
 
-        if (Input.GetKeyDown(KeyCode.H)) showHint = !showHint;
-        if (Input.GetKeyDown(KeyCode.R)) BuildLevel();     // 重开本关（同一关重新摆一次）
+        // 挑战模式必须先点 Start（或空格 / 回车）才开表，期间人物是锁住的
+        if (challengeMode && !challengeActive)
+        {
+            if (IsStartKeyDown()) StartTimer();
+            else if (Input.GetKeyDown(KeyCode.H)) Toast("挑战模式不能查看最优解提示。");
+            return;
+        }
+
+        if (Input.GetKeyDown(KeyCode.H))
+        {
+            if (CanHint) showHint = !showHint;
+            else Toast("挑战模式不能查看最优解提示。");
+        }
+        if (Input.GetKeyDown(KeyCode.R) && CanRetry) BuildLevel();     // 重开本关（同一关重新摆一次）
+    }
+
+    /// <summary>结算界面的键盘操作：空格 / R 重开本关（挑战模式禁用），N 换一关，H 看提示。</summary>
+    private void HandleGameOverKeys()
+    {
+        if (CanRetry && (Input.GetKeyDown(KeyCode.Space) || Input.GetKeyDown(KeyCode.R)))
+        {
+            BuildLevel();
+            return;
+        }
+        if (Input.GetKeyDown(KeyCode.N) && difficultyIndex >= 0)
+        {
+            StartDifficulty(difficultyIndex);
+            return;
+        }
+        if (Input.GetKeyDown(KeyCode.H))
+        {
+            if (CanHint) showHint = !showHint;
+            else Toast("挑战模式不能查看最优解提示。");
+        }
+    }
+
+    /// <summary>开始计时的按键（空格 / 回车），与 Start 按钮等价。</summary>
+    private static bool IsStartKeyDown()
+    {
+        return Input.GetKeyDown(KeyCode.Space) || Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter);
     }
 
     private void HandleMenuKeys()
@@ -188,6 +227,11 @@ public class createfruit : MonoBehaviour
         else if (Input.GetKeyDown(KeyCode.Alpha2) || Input.GetKeyDown(KeyCode.Keypad2)) StartDifficulty(1);
         else if (Input.GetKeyDown(KeyCode.Alpha3) || Input.GetKeyDown(KeyCode.Keypad3)) StartDifficulty(2);
         else if (Input.GetKeyDown(KeyCode.E)) StartSampleLevel();
+        else if (Input.GetKeyDown(KeyCode.C))   // 挑战模式开关的快捷键（也可以直接用鼠标点入口界面上的复选框）
+        {
+            challengeMode = !challengeMode;
+            Toast(challengeMode ? "挑战模式已开启：进入关卡要先点 Start 开始计时。" : "挑战模式已关闭。");
+        }
     }
 
     /// <summary>回到入口界面（会清掉场上的关卡物体）。</summary>
@@ -204,6 +248,10 @@ public class createfruit : MonoBehaviour
         errorText = "";
         modeTitle = "";
         showHint = false;
+        challengeActive = false;
+        challengeTime = 0f;
+        challengeBest = NoRecord;
+        challengeNewRecord = false;
 
         FitMenuCamera();
     }
@@ -330,8 +378,17 @@ public class createfruit : MonoBehaviour
         if (!SpawnLevel()) return;
         if (autoFitCamera) FitLevelCamera();
 
+        // 挑战模式：等玩家点 Start 才开表、才允许移动
+        challengeActive = false;
+        challengeTime = 0f;
+        challengeNewRecord = false;
+        challengeBest = GetBestTime(difficultyIndex);
+        if (challengeMode && playerController != null) playerController.canMove = false;
+
         CollectAt(startIndex, true);    // 起点格上的物品开局即算获得
         CheckResult();                  // 极短关卡可能开局就集齐，也要判胜
+
+        if (challengeMode && !gameOver) Toast("挑战模式：点 Start（或按空格）开始计时。");
 
         Debug.LogFormat("[关卡] {0}：{1} 格、{2} 种，最少 {3} 步（先{4}，左{5} 格 / 右{6} 格），允许 {7} 步",
                         modeTitle, cellCount, requiredTypes, minSteps, plan.LeftFirst ? "左" : "右",
@@ -507,6 +564,14 @@ public class createfruit : MonoBehaviour
             win = true;
             LockPlayer();
             statusText = string.Format("通过！共用 {0} 步（最优 {1} 步）", usedSteps, minSteps);
+            if (challengeMode)
+            {
+                if (challengeActive) RecordBestTime();
+                statusText += string.Format("\n用时 {0}（{1}最佳 {2}）",
+                                           FormatTime(challengeTime),
+                                           challengeNewRecord ? "★新纪录，" : "",
+                                           FormatTime(challengeBest));
+            }
             Debug.Log("[游戏结束] " + statusText);
             return;
         }
@@ -589,6 +654,76 @@ public class createfruit : MonoBehaviour
     public bool IsTypeCollected(int type)
     {
         return collectedTypes.Contains(type);
+    }
+
+    // ============================ 挑战模式 ============================
+
+    /// <summary>还没有成绩记录时 BestTime 的取值。</summary>
+    public const float NoRecord = -1f;
+
+    private const string BestTimeKeyPrefix = "ZY001.Best.";
+
+    /// <summary>是否允许查看最优解提示（挑战模式一律禁用）。</summary>
+    public bool CanHint
+    {
+        get { return !challengeMode; }
+    }
+
+    /// <summary>是否允许“重开 / 重试本关”（挑战模式一律不允许，失败只能换一关）。</summary>
+    public bool CanRetry
+    {
+        get { return !challengeMode; }
+    }
+
+    /// <summary>挑战模式：开始计时（由 Start 按钮或空格 / 回车触发）。</summary>
+    public void StartTimer()
+    {
+        if (!challengeMode || challengeActive || gameOver) return;
+
+        challengeActive = true;
+        challengeTime = 0f;
+        if (playerController != null) playerController.canMove = true;
+        Toast("计时开始！用时越短越好。");
+    }
+
+    /// <summary>某个难度的最佳用时（index 小于 0 表示示例关卡），NoRecord 表示还没有记录。</summary>
+    public float GetBestTime(int index)
+    {
+        return PlayerPrefs.GetFloat(BestTimeKeyPrefix + (index >= 0 ? "D" + index : "Sample"), NoRecord);
+    }
+
+    /// <summary>最佳用时的显示文本（mm:ss.cc，没有记录时显示 --）。</summary>
+    public string GetBestTimeText(int index)
+    {
+        return FormatTime(GetBestTime(index));
+    }
+
+    /// <summary>把秒数格式化成 mm:ss.cc。</summary>
+    public static string FormatTime(float seconds)
+    {
+        if (seconds < 0f) return "--";
+
+        int centis = Mathf.RoundToInt(seconds * 100f);
+        int minutes = centis / 6000;
+        int rest = centis % 6000;
+        return string.Format("{0:00}:{1:00}.{2:00}", minutes, rest / 100, rest % 100);
+    }
+
+    /// <summary>通关后把用时写进 PlayerPrefs，破了纪录时把 challengeNewRecord 置为 true。</summary>
+    private void RecordBestTime()
+    {
+        if (!challengeMode || !challengeActive || challengeTime <= 0f) return;
+
+        string key = BestTimeKeyPrefix + (difficultyIndex >= 0 ? "D" + difficultyIndex : "Sample");
+        float best = PlayerPrefs.GetFloat(key, NoRecord);
+        if (best <= 0f || challengeTime < best)
+        {
+            PlayerPrefs.SetFloat(key, challengeTime);
+            PlayerPrefs.Save();
+            challengeNewRecord = true;
+            Debug.Log("[挑战模式] 新纪录：" + key + " = " + FormatTime(challengeTime));
+        }
+        challengeBest = GetBestTime(difficultyIndex);
     }
 
     /// <summary>示例关卡的一句话简介（入口界面按钮上显示）。</summary>

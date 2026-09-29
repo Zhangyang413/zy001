@@ -44,6 +44,7 @@ public class FruitItem : MonoBehaviour
     }
 
     private static GUIStyle labelStyle;
+    private static int labelFontSize = -1;
 
     void OnGUI()
     {
@@ -53,17 +54,26 @@ public class FruitItem : MonoBehaviour
         Vector3 screenPos = cam.WorldToScreenPoint(transform.position);
         if (screenPos.z <= 0f) return;                      // 在相机背面就不显示
 
-        if (labelStyle == null)
+        // 字号随分辨率缩放，并用 UiFont 的高清动态字体，否则数字会发虚
+        int fontSize = UiFont.FontPx(22);
+        if (labelStyle == null || labelFontSize != fontSize)
         {
+            labelFontSize = fontSize;
             labelStyle = new GUIStyle(GUI.skin.label);
+            labelStyle.font = UiFont.Font;
+            labelStyle.fontSize = fontSize;
             labelStyle.alignment = TextAnchor.MiddleCenter;
             labelStyle.fontStyle = FontStyle.Bold;
         }
 
+        string text = fruitType.ToString();
+        float width = UiFont.Px(72);
+        float height = labelStyle.CalcHeight(new GUIContent(text), width);
+        Rect rect = new Rect(screenPos.x - width * 0.5f, Screen.height - screenPos.y - UiFont.Px(48), width, height);
+
         Color oldColor = GUI.contentColor;
         GUI.contentColor = GetTypeColor(fruitType);
-        GUI.Label(new Rect(screenPos.x - 25f, Screen.height - screenPos.y - 42f, 50f, 20f),
-                  fruitType.ToString(), labelStyle);
+        GUI.Label(rect, text, labelStyle);
         GUI.contentColor = oldColor;
     }
 }

@@ -5,7 +5,8 @@
 在 **给定步数** 内把所有种类各捡到至少一个即 **通过**，否则 **失败**。
 给定步数由最优解算法 `MinMovesSolver.MinMovesToCollectM()` 计算得出。
 
-游戏有 **入口界面**（可选难度 / 可看游戏说明），人物是 **运行时拼出来的卡通小人**（戴棒球帽，会走路起伏）。
+游戏有 **入口界面**（可选难度 / 可看游戏说明 / 可开关挑战模式），人物是 **运行时拼出来的卡通小人**（戴棒球帽，会走路起伏）；
+界面全部是 IMGUI，但用的是 **系统矢量字体 + 分辨率自适应**，任意分辨率下文字都清晰、都不会被面板裁掉。
 
 ## 玩法
 
@@ -17,7 +18,9 @@
 | `Esc` | 返回入口界面 |
 | `1` `2` `3` | 在入口界面直接进入难度 1 / 2 / 3 |
 | `E` | 在入口界面进入示例关卡 |
-| `空格` / `N` | 结算界面：重试本关 / 换一关（重新随机） |
+| `空格` / `N` | 结算界面：重试本关 / 换一关（重新随机）；挑战模式下重试被禁用 |
+| `空格` / `回车` | 挑战模式：等价于点 HUD 上的 `Start` 按钮，开始计时 |
+| `C` | 在入口界面开关挑战模式（也可以直接用鼠标点复选框） |
 
 * 人物**起点格上的物品**在开局即视为已获得（与算法中距离为 0 的假设一致）。
 * 踩到物品即自动捡起；重复种类的物品不会增加“集齐进度”，但依然消耗一步。
@@ -46,6 +49,22 @@
 难度区间的定义在场景对象的 `createfruit.difficulties` 数组里，可在 Inspector 直接改
 （`title` / `minCells` / `maxCells` / `typeCount`）。
 
+## 挑战模式（限时挑战）
+
+入口界面有一个 **挑战模式** 开关（用鼠标点复选框，或直接按 `C` 键），打开后：
+
+| 规则 | 说明 |
+| --- | --- |
+| **先点 Start** | 进入关卡后人物是锁住的，点 HUD 上的 `Start`（或按 `空格` / `回车`）才开始计时并解锁移动 |
+| **禁用提示** | `H` 键的最优解提示被禁用，按了只会提示“挑战模式不能查看最优解提示” |
+| **失败不能重试** | 失败后结算界面没有“重试本关”，空格 / `R` 都无效，只能 `N` 换一关或 `Esc` 返回入口 |
+| **最佳成绩** | 每个难度（以及示例关卡）单独记录最佳用时，显示在入口界面对应的条目上，用时越短越好 |
+| **新纪录** | 通关时用时比历史最好更短会显示 `★新纪录`，并立即写入存档 |
+
+* 计时精度为 0.01 秒，格式 `mm:ss.cc`，用 `Time.unscaledDeltaTime` 累计（不受帧率与暂停影响）。
+* 成绩保存在 `PlayerPrefs`（键名 `ZY001.Best.D0` / `D1` / `D2` / `Sample`），
+  打包后的独立运行包存在 `%USERPROFILE%\AppData\LocalLow\ZhangYang\捡物品大冒险\` 下。
+
 ## 目录结构
 
 ```
@@ -57,6 +76,9 @@ Assets/
 ├─ PlayerController.cs  人物网格移动与输入（每步一格、边界限制、步数控制）
 ├─ PlayerAvatar.cs      卡通小人形象（运行时用球体/方块拼出，带走路起伏与倾斜）
 ├─ FruitItem.cs         物品外观（种类、颜色、编号显示）
+├─ UiFont.cs            界面高清字体（系统矢量动态字体）与分辨率缩放
+├─ Editor/
+│  └─ BuildStandalone.cs  一键生成 Windows 独立运行包（.exe + _Data，双击即玩）
 ├─ Resources/
 │  ├─ fruit.prefab      物品预制体（Cube + BoxCollider + Rigidbody + FruitItem）
 │  └─ Player.prefab     人物预制体（Cube + BoxCollider + Rigidbody + PlayerController）
@@ -88,7 +110,9 @@ Assets/
   示例关卡最优解为 **4 步**（先左 1 格 → 再右 2 格）。
 * **随机关卡**：3 个难度各生成 2000 关，物品数量区间 / 种类齐全 / 起点合法 / 可解 **0 异常**，
   平均最少步数约 2.8 / 4.7 / 6.8 步（难度递增），同一种子可复现。
-* 全部脚本用 Unity 2022.3.62t16 的 DLL 引用以 `netstandard2.1 + C# 9` 编译通过（0 错误）。
+* 全部脚本用 Unity 2022.3.62t16 的 DLL 引用以 `netstandard2.1 + C# 9` 编译通过（0 错误，含 `Editor/BuildStandalone.cs`）。
+* 独立运行包：`BuildStandalone.BuildWindows64` 生成 `PickUpAdventure.exe` + `PickUpAdventure_Data`（Mono 后端），
+  实测可直接双击运行，不依赖团结引擎或其他软件。
 
 ## 打开与运行
 
@@ -98,3 +122,36 @@ Assets/
 
 > `Library/`、`Temp/`、`obj/`、`Logs/`、`UserSettings/`、`*.csproj`、`*.sln` 等都已加入 `.gitignore`，
 > 克隆后由编辑器首次导入时自动生成。
+
+## 独立运行包（不依赖编辑器）
+
+`Assets/Editor/BuildStandalone.cs` 可以生成一个自带运行时的 Windows 版本，
+**双击 `.exe` 就能玩，不需要装团结引擎或任何其他软件**。
+
+方式一：编辑器里点菜单 **构建 / 生成 Windows 独立运行包**（工程没打开时更好），
+默认输出到工程目录下的 `Builds/PickUpAdventure/`。
+
+方式二：命令行批处理（工程必须处于关闭状态，否则项目锁会挡住）：
+
+```powershell
+& "C:\Program Files\Tuanjie\Hub\Editor\2022.3.62t16\Editor\Tuanjie.exe" `
+  -batchmode -nographics -quit `
+  -projectPath "e:\Learning Materials\course_new\unity\unity_folders\projects\My project1" `
+  -executeMethod BuildStandalone.BuildWindows64 `
+  -buildOutput "E:\zy001_build" `
+  -logFile "E:\zy001_build\build.log"
+```
+
+产物结构（整个文件夹一起拷走，`.exe` 必须与 `_Data` 同级）：
+
+```
+PickUpAdventure/
+├─ PickUpAdventure.exe        ← 双击运行
+├─ PickUpAdventure_Data/      ← 场景、贴图、程序集等资源
+├─ MonoBleedingEdge/          ← 自带的 C# 运行时（所以无需外部依赖）
+├─ UnityPlayer.dll
+└─ UnityCrashHandler64.exe
+```
+
+打包参数：产品名“捡物品大冒险”、公司名 `ZhangYang`、**1600×900 窗口模式（可自由缩放）**、
+脚本后端 **Mono2x**、API 兼容性 .NET Standard 2.0。
