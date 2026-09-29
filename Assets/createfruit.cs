@@ -3,18 +3,34 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// 关卡构建 + 游戏流程管理（挂在场景里的 “GameObject” 上）。
+/// 关卡构建 + 游戏流程管理（挂在场景里名为 “GameObject” 的对象上）。
 ///
-/// 玩法规则：
-///   · 人物与各种类物品等距生成在一条直线上（1 格 = cellSize 个世界单位），人物每走一格消耗 1 步；
-///   · 每格的物品被踩到就自动捡起，起点格上的种类在开局即视为已获得；
-///   · 允许步数 = 最少步数（MinMovesSolver 计算）+ extraSteps，在允许步数内把每种物品
-///     都捡到至少一个即【通过】，步数用尽还没集齐则【失败】；
-///   · ← → / A D 移动，H 显示或隐藏最优解提示，R 重新开始。
+/// 整体流程：
+///   入口界面（选难度 1/2/3 或示例关卡，界面里有游戏说明）
+///     → 游戏中（人物走格子、踩到就捡，用允许步数内集齐所有种类）
+///     → 结算界面（再来一次 / 换一关 / 返回入口界面）
+///
+/// 规则：
+///   · 人物与物品等距排成一行，人物每走一格消耗 1 步；
+///   · 起点格上的物品在开局即视为已获得；
+///   · 允许步数 = 最少步数（MinMovesSolver 计算）+ extraSteps；先判“集齐 → 通过”，
+///     再判“步数用尽 → 失败”；
+///   · SampleScene 里序列化的 n/a/start/m 就是“示例关卡”的固定配置；
+///     难度 1/2/3 由 LevelGenerator 随机构造（物品数量与位置随机、人物位置随机）。
+///
+/// 界面（入口界面 / HUD / 结算）全部在 GameHud.cs 中绘制，本脚本只负责数据与规则。
 /// </summary>
 public class createfruit : MonoBehaviour
 {
-    [Header("关卡数据")]
+    /// <summary>游戏所处的阶段。</summary>
+    public enum Phase
+    {
+        Menu,       // 入口界面
+        Playing     // 游戏中（含结算覆盖层）
+    }
+
+    // ============================ 示例关卡（场景序列化配置） ============================
+    [Header("示例关卡数据（SampleScene 的固定配置，入口界面“示例关卡”使用）")]
     [Tooltip("格子数量")]
     public int n = 10;
 
@@ -24,69 +40,247 @@ public class createfruit : MonoBehaviour
     [Tooltip("人物初始所在的格子下标")]
     public int start = 7;
 
-    [Tooltip("需要集齐的种类数，应与数组里的不同种类数一致；<= 0 表示按数组自动统计")]
+    [Tooltip("需要集齐的种类数，应等于数组里的不同种类数；<= 0 表示按数组自动统计")]
     public int m = 4;
 
+    // ============================ 难度配置（随机生成） ============================
+    /// <summary>一个难度档位的配置。</summary>
+    [Serializable]
+    public class Difficulty
+    {
+        [Tooltip("入口界面显示的难度名称")]
+        public string title = "难度";
+
+        [Tooltip("物品数量下限（格数）")]
+        public int minCells = 4;
+
+        [Tooltip("物品数量上限（格数）")]
+        public int maxCells = 6;
+
+        [Tooltip("物品种类数")]
+        public int typeCount = 3;
+
+        public Difficulty()
+        {
+        }
+
+        public Difficulty(string title, int minCells, int maxCells, int typeCount)
+        {
+            this.title = title;
+            this.minCells = minCells;
+            this.maxCells = maxCells;
+            this.typeCount = typeCount;
+        }
+    }
+
+    [Header("难度配置（随机关卡：物品数量、物品与人物位置都随机）")]
+    public Difficulty[] difficulties = new Difficulty[]
+    {
+        new Difficulty("难度 1", 4, 6, 3),
+        new Difficulty("难度 2", 7, 9, 4),
+        new Difficulty("难度 3", 10, 14, 5),
+    };
+
+    // ============================ 表现与规则 ============================
     [Header("网格与表现")]
     [Tooltip("一格的世界长度，也就是人物每步走的距离")]
     public float cellSize = 1f;
 
-    [Tooltip("物品边长（以格为单位，1 表示刚好占满一格）")]
+    [Tooltip("物品边长（以格为单位）")]
     public float itemScale = 0.8f;
 
     [Tooltip("整行所在的世界 z 坐标")]
     public float zOffset = 0f;
 
-    [Tooltip("自动把主相机对准整行，保证不同长度的关卡都能看全")]
+    [Tooltip("自动把主相机对准整行")]
     public bool autoFitCamera = true;
 
+    [Tooltip("使用卡通小人形象（关掉则退回方块外观）")]
+    public bool cartoonPlayer = true;
+
     [Header("规则")]
-    [Tooltip("在最少步数之外额外给的步数，0 表示严格按最优解的步数给")]
+    [Tooltip("在最少步数之外额外给的步数，0 表示严格按最优解给")]
     public int extraSteps = 0;
 
-    [Header("运行时状态（只读观察用）")]
-    [Tooltip("每格上的物品，被捡走后对应位置为 null")]
+    [Tooltip("游戏一开始是否先显示入口界面")]
+    public bool startInMenu = true;
+
+    // ============================ 运行时状态（界面只读） ============================
+    [Header("运行时状态")]
+    public Phase phase = Phase.Menu;
     public GameObject[] fruits;
-    public int requiredTypes;       // 本关真正的种类数
-    public int minSteps;            // 最优解步数
-    public int allowedSteps;        // 允许的步数 = minSteps + extraSteps
-    public int usedSteps;           // 已用步数
+    public string modeTitle = "";
+    public int cellCount;
+    public int[] types;
+    public int startIndex;
+    public int requiredTypes;
+    public int minSteps;
+    public int allowedSteps;
+    public int usedSteps;
     public bool gameOver;
     public bool win;
     public string statusText = "";
+    public string toastText = "";
+    public float toastTime;
+    public string errorText = "";
+    public int difficultyIndex = -1;        // -1 = 示例关卡，>=0 = difficulties 的下标
+    public bool showHint;
+    [NonSerialized] public MinMovesSolver.MovePlan plan;
 
     private readonly Dictionary<int, FruitItem> fruitsByIndex = new Dictionary<int, FruitItem>();
     private readonly HashSet<int> collectedTypes = new HashSet<int>();
-    private readonly List<int> typeList = new List<int>();      // 关卡里出现过的种类（按首次出现顺序）
+    private readonly List<int> typeList = new List<int>();
     private PlayerController playerController;
     private GameObject player;
-    private MinMovesSolver.MovePlan plan;
-    private bool showHint;
-    private string toastText = "";
-    private float toastTime;
-    private string errorText = "";
+    private GameHud hud;
 
     void Start()
     {
-        BuildLevel();
+        // 挂上界面脚本（入口界面 / HUD / 结算都画在里面）
+        hud = gameObject.GetComponent<GameHud>();
+        if (hud == null) hud = gameObject.AddComponent<GameHud>();
+        hud.game = this;
+
+        if (startInMenu) EnterMenu();
+        else StartSampleLevel();
     }
 
     void Update()
     {
         if (toastTime > 0f) toastTime -= Time.deltaTime;
 
-        if (Input.GetKeyDown(KeyCode.R))
+        if (phase == Phase.Menu)
         {
-            BuildLevel();
+            HandleMenuKeys();
             return;
         }
-        if (Input.GetKeyDown(KeyCode.H))
+
+        if (Input.GetKeyDown(KeyCode.Escape))
         {
-            showHint = !showHint;
+            EnterMenu();
+            return;
         }
+
+        if (gameOver)
+        {
+            // 结算界面：空格 / R 重来本关，N 换一关（仅随机关卡），H 看提示
+            if (Input.GetKeyDown(KeyCode.Space) || Input.GetKeyDown(KeyCode.R))
+            {
+                BuildLevel();
+                return;
+            }
+            if (Input.GetKeyDown(KeyCode.N) && difficultyIndex >= 0)
+            {
+                StartDifficulty(difficultyIndex);
+                return;
+            }
+            if (Input.GetKeyDown(KeyCode.H)) showHint = !showHint;
+            return;
+        }
+
+        if (Input.GetKeyDown(KeyCode.H)) showHint = !showHint;
+        if (Input.GetKeyDown(KeyCode.R)) BuildLevel();     // 重开本关（同一关重新摆一次）
     }
 
-    /// <summary>重新构建关卡（首次进入以及按 R 重开都会调用）。</summary>
+    private void HandleMenuKeys()
+    {
+        if (Input.GetKeyDown(KeyCode.Alpha1) || Input.GetKeyDown(KeyCode.Keypad1)) StartDifficulty(0);
+        else if (Input.GetKeyDown(KeyCode.Alpha2) || Input.GetKeyDown(KeyCode.Keypad2)) StartDifficulty(1);
+        else if (Input.GetKeyDown(KeyCode.Alpha3) || Input.GetKeyDown(KeyCode.Keypad3)) StartDifficulty(2);
+        else if (Input.GetKeyDown(KeyCode.E)) StartSampleLevel();
+    }
+
+    /// <summary>回到入口界面（会清掉场上的关卡物体）。</summary>
+    public void EnterMenu()
+    {
+        ClearLevel();
+
+        phase = Phase.Menu;
+        gameOver = false;
+        win = false;
+        statusText = "";
+        toastText = "";
+        toastTime = 0f;
+        errorText = "";
+        modeTitle = "";
+        showHint = false;
+
+        FitMenuCamera();
+    }
+
+    /// <summary>进入场景里配置好的示例关卡（SampleScene 的固定关卡）。</summary>
+    public void StartSampleLevel()
+    {
+        if (a == null || a.Length == 0)
+        {
+            phase = Phase.Menu;
+            Fail("示例关卡的数组 a 为空，请在 Inspector 里填写每格物品的种类。");
+            return;
+        }
+
+        int[] data = (int[])a.Clone();
+        StartLevel(data, start, m,
+                   string.Format("示例关卡（{0} 格 · {1} 种）", data.Length, LevelGenerator.CountTypes(data)),
+                   -1);
+    }
+
+    /// <summary>按难度随机生成一关（物品数量、物品与人物位置都随机）。</summary>
+    public void StartDifficulty(int index)
+    {
+        if (difficulties == null || difficulties.Length == 0)
+        {
+            phase = Phase.Menu;
+            Fail("Inspector 里没有配置任何难度。");
+            return;
+        }
+
+        index = Mathf.Clamp(index, 0, difficulties.Length - 1);
+        Difficulty config = difficulties[index];
+
+        // 允许少量重随机，避免出现“一步就集齐”这种没意思的关卡
+        LevelGenerator.LevelDefinition level = new LevelGenerator.LevelDefinition();
+        MinMovesSolver.MovePlan check = new MinMovesSolver.MovePlan();
+        bool ok = false;
+        for (int attempt = 0; attempt < 30 && !ok; attempt++)
+        {
+            level = LevelGenerator.Generate(config.minCells, config.maxCells, config.typeCount);
+            check = MinMovesSolver.Solve(level.Types, level.StartIndex, level.TypeCount);
+            ok = check.Success && check.Steps >= 2;
+        }
+
+        if (!ok)
+        {
+            phase = Phase.Menu;
+            Fail(string.Format("{0} 的配置无法生成有效关卡（物品 {1}~{2} 个 · {3} 种）。",
+                               config.title, config.minCells, config.maxCells, config.typeCount));
+            return;
+        }
+
+        Debug.Log(string.Format("[随机关卡] {0}：物品 {1} 个、{2} 种、起点格 {3}、最少 {4} 步、随机种子 {5}",
+                                config.title, level.CellCount, level.TypeCount, level.StartIndex,
+                                check.Steps, level.Seed));
+
+        StartLevel(level.Types, level.StartIndex, level.TypeCount,
+                   string.Format("{0}（{1} 格 · {2} 种）", config.title, level.CellCount, level.TypeCount),
+                   index);
+    }
+
+    /// <summary>切换到某一关并立即开始。</summary>
+    private void StartLevel(int[] levelTypes, int levelStart, int levelRequired, string title, int index)
+    {
+        types = (int[])levelTypes.Clone();      // 拷一份，避免外部数据被后续改动
+        startIndex = levelStart;
+        cellCount = types.Length;
+        requiredTypes = levelRequired > 0 ? levelRequired : LevelGenerator.CountTypes(types);
+        modeTitle = title;
+        difficultyIndex = index;
+        showHint = false;
+        phase = Phase.Playing;
+
+        BuildLevel();
+    }
+
+    /// <summary>按当前关卡数据重新生成人物与物品（也用于“再来一次”“R 重开”）。</summary>
     public void BuildLevel()
     {
         ClearLevel();
@@ -102,52 +296,49 @@ public class createfruit : MonoBehaviour
         toastTime = 0f;
         errorText = "";
 
-        if (a == null || a.Length == 0)
+        if (types == null || types.Length == 0)
         {
-            Fail("关卡数据 a 为空：请在 Inspector 里填写每格物品的种类。");
+            Fail("关卡数据为空。");
             return;
         }
-        if (n != a.Length)
+        if (startIndex < 0 || startIndex >= types.Length)
         {
-            Debug.LogWarningFormat("[关卡] n={0} 与数组长度 {1} 不一致，已按数组长度处理。", n, a.Length);
-            n = a.Length;
-        }
-        if (start < 0 || start >= n)
-        {
-            Fail(string.Format("起点下标 start={0} 超出范围 [0, {1}]。", start, n - 1));
+            Fail(string.Format("起点下标 {0} 超出范围 [0, {1}]。", startIndex, types.Length - 1));
             return;
         }
 
-        for (int i = 0; i < n; i++)
+        cellCount = types.Length;
+        for (int i = 0; i < cellCount; i++)
         {
-            if (!typeList.Contains(a[i])) typeList.Add(a[i]);
+            if (!typeList.Contains(types[i])) typeList.Add(types[i]);
         }
-        requiredTypes = typeList.Count;
+        if (requiredTypes <= 0) requiredTypes = typeList.Count;
 
         // 关键规则：允许步数由求解器算出的“最少步数”决定
-        plan = MinMovesSolver.Solve(a, start, m);
+        plan = MinMovesSolver.Solve(types, startIndex, requiredTypes);
         if (!plan.Success)
         {
             Fail("无法求解本关的最少步数 —— " + plan.FailureReason);
             return;
         }
         if (!string.IsNullOrEmpty(plan.Notice)) Debug.LogWarning("[关卡] " + plan.Notice);
+
         minSteps = plan.Steps;
         allowedSteps = minSteps + Mathf.Max(0, extraSteps);
 
-        fruits = new GameObject[n];
+        fruits = new GameObject[cellCount];
         if (!SpawnLevel()) return;
-        if (autoFitCamera) FitCamera();
+        if (autoFitCamera) FitLevelCamera();
 
-        CollectAt(start, true);     // 起点格上的种类视为开局就已经拿到
-        CheckResult();              // 万一开局就集齐（极短关卡）也要判胜
+        CollectAt(startIndex, true);    // 起点格上的物品开局即算获得
+        CheckResult();                  // 极短关卡可能开局就集齐，也要判胜
 
-        Debug.LogFormat("[关卡] 种类数={0}，最少步数={1}（先{2}，左{3}格/右{4}格），允许步数={5}",
-                        requiredTypes, minSteps, plan.LeftFirst ? "左" : "右",
+        Debug.LogFormat("[关卡] {0}：{1} 格、{2} 种，最少 {3} 步（先{4}，左{5} 格 / 右{6} 格），允许 {7} 步",
+                        modeTitle, cellCount, requiredTypes, minSteps, plan.LeftFirst ? "左" : "右",
                         plan.LeftSteps, plan.RightSteps, allowedSteps);
     }
 
-    /// <summary>生成物品与人物，返回是否生成成功。</summary>
+    /// <summary>生成物品与人物，返回是否成功。</summary>
     private bool SpawnLevel()
     {
         GameObject fruitPrefab = LoadPrefab("Fruit", "fruit");
@@ -159,33 +350,43 @@ public class createfruit : MonoBehaviour
         }
 
         float itemSize = cellSize * itemScale;
-        for (int i = 0; i < n; i++)
+        for (int i = 0; i < cellCount; i++)
         {
             GameObject obj = Instantiate(fruitPrefab, CellToWorld(i, itemSize), Quaternion.identity);
-            obj.name = string.Format("Fruit_{0}_type{1}", i, a[i]);
+            obj.name = string.Format("Fruit_{0}_type{1}", i, types[i]);
             obj.transform.localScale = Vector3.one * itemSize;
             PrepareBody(obj);
 
             FruitItem item = obj.GetComponent<FruitItem>();
             if (item == null) item = obj.AddComponent<FruitItem>();
-            item.SetType(a[i]);
+            item.SetType(types[i]);
 
             fruits[i] = obj;
             fruitsByIndex[i] = item;
         }
 
-        player = Instantiate(playerPrefab, CellToWorld(start, cellSize), Quaternion.identity);
+        // 卡通小人从地面往上搭，所以根节点放在 y = 0；方块外观则放在半格高处
+        float playerTileSize = cartoonPlayer ? 0f : cellSize;
+        player = Instantiate(playerPrefab, CellToWorld(startIndex, playerTileSize), Quaternion.identity);
         player.name = "Player";
-        player.transform.localScale = Vector3.one * cellSize;
+        player.transform.localScale = Vector3.one;
         PrepareBody(player);
 
-        // 人物用一个偏深的颜色，和彩色物品区分开
-        Renderer playerRenderer = player.GetComponentInChildren<Renderer>();
-        if (playerRenderer != null) playerRenderer.material.color = new Color(0.25f, 0.28f, 0.35f);
+        if (cartoonPlayer)
+        {
+            PlayerAvatar avatar = player.GetComponent<PlayerAvatar>();
+            if (avatar == null) avatar = player.AddComponent<PlayerAvatar>();
+            avatar.Build(cellSize);
+        }
+        else
+        {
+            Renderer playerRenderer = player.GetComponentInChildren<Renderer>();
+            if (playerRenderer != null) playerRenderer.material.color = new Color(0.25f, 0.28f, 0.35f);
+        }
 
         playerController = player.GetComponent<PlayerController>();
         if (playerController == null) playerController = player.AddComponent<PlayerController>();
-        playerController.Configure(start, 0, n - 1, cellSize, CellOriginX(), allowedSteps,
+        playerController.Configure(startIndex, 0, cellCount - 1, cellSize, CellOriginX(), allowedSteps,
                                    OnPlayerMoved, OnPlayerBlocked);
         return true;
     }
@@ -210,7 +411,7 @@ public class createfruit : MonoBehaviour
     /// <summary>第 0 格的 x 坐标（使整行以 x = 0 为中心）。</summary>
     private float CellOriginX()
     {
-        return -(n - 1) * 0.5f * cellSize;
+        return -(cellCount - 1) * 0.5f * cellSize;
     }
 
     private static GameObject LoadPrefab(params string[] names)
@@ -224,15 +425,15 @@ public class createfruit : MonoBehaviour
     }
 
     /// <summary>按整行宽度自动取景，关卡多长都能一眼看全。</summary>
-    private void FitCamera()
+    private void FitLevelCamera()
     {
         Camera cam = Camera.main;
         if (cam == null) return;
 
-        float rowWidth = (n - 1) * cellSize + cellSize * 3f;    // 行宽 + 两侧留白
+        float rowWidth = (cellCount - 1) * cellSize + cellSize * 3f;    // 行宽 + 两侧留白
         float aspect = cam.aspect > 0.01f ? cam.aspect : 16f / 9f;
 
-        cam.transform.rotation = Quaternion.identity;           // 沿 +z 正对整行
+        cam.transform.rotation = Quaternion.identity;                    // 沿 +z 正对整行
         if (cam.orthographic)
         {
             cam.orthographicSize = Mathf.Max(rowWidth * 0.5f / aspect, cellSize * 2f);
@@ -246,6 +447,16 @@ public class createfruit : MonoBehaviour
         }
     }
 
+    /// <summary>入口界面固定一个机位，背景看起来更稳。</summary>
+    private void FitMenuCamera()
+    {
+        Camera cam = Camera.main;
+        if (cam == null) return;
+
+        cam.transform.rotation = Quaternion.identity;
+        cam.transform.position = new Vector3(0f, cellSize * 2.5f, zOffset - cellSize * 7f);
+    }
+
     /// <summary>人物移动成功后的回调：先捡起当前格的物品，再判定胜负。</summary>
     private void OnPlayerMoved(int index, int stepsUsed)
     {
@@ -257,7 +468,7 @@ public class createfruit : MonoBehaviour
     /// <summary>人物想走出格子范围时的回调（不消耗步数）。</summary>
     private void OnPlayerBlocked(int attemptedIndex)
     {
-        Toast(string.Format("已经到头了（格子范围 0 ~ {0}），这一步不算步数。", n - 1));
+        Toast(string.Format("已经到头了（格子范围 0 ~ {0}），这一步不算步数。", cellCount - 1));
     }
 
     /// <summary>捡起第 index 格上的物品；silent 为 true 表示不弹提示（开局捡起点格用）。</summary>
@@ -285,7 +496,7 @@ public class createfruit : MonoBehaviour
         }
     }
 
-    /// <summary>判定通过 / 失败。顺序很重要：先用尽步数的那一步如果刚好集齐，算通过。</summary>
+    /// <summary>判定通过 / 失败。顺序很重要：用尽步数的那一步如果刚好集齐，算通过。</summary>
     private void CheckResult()
     {
         if (gameOver) return;
@@ -316,7 +527,7 @@ public class createfruit : MonoBehaviour
         if (playerController != null) playerController.canMove = false;
     }
 
-    /// <summary>清掉上一次生成的人物和物品，供重新开局使用。</summary>
+    /// <summary>清掉上一次生成的人物和物品。</summary>
     private void ClearLevel()
     {
         if (fruits != null)
@@ -331,6 +542,7 @@ public class createfruit : MonoBehaviour
         player = null;
         playerController = null;
         fruits = null;
+        fruitsByIndex.Clear();
     }
 
     private void Fail(string reason)
@@ -346,8 +558,56 @@ public class createfruit : MonoBehaviour
         toastTime = 2.5f;
     }
 
-    /// <summary>已拿到的种类文本（供 HUD 显示）。</summary>
-    private string BuildCollectedTypesText()
+    // ============================ 供 GameHud 读取的只读接口 ============================
+
+    /// <summary>难度档位数量。</summary>
+    public int DifficultyCount
+    {
+        get { return difficulties == null ? 0 : difficulties.Length; }
+    }
+
+    /// <summary>取某个难度的配置（下标越界返回 null）。</summary>
+    public Difficulty GetDifficulty(int index)
+    {
+        if (difficulties == null || index < 0 || index >= difficulties.Length) return null;
+        return difficulties[index];
+    }
+
+    /// <summary>当前关卡出现过的种类（按首次出现顺序）。</summary>
+    public List<int> TypeList
+    {
+        get { return typeList; }
+    }
+
+    /// <summary>已集齐的种类数。</summary>
+    public int CollectedTypeCount
+    {
+        get { return collectedTypes.Count; }
+    }
+
+    /// <summary>某种类是否已经拿到。</summary>
+    public bool IsTypeCollected(int type)
+    {
+        return collectedTypes.Contains(type);
+    }
+
+    /// <summary>示例关卡的一句话简介（入口界面按钮上显示）。</summary>
+    public string GetSampleLevelSummary()
+    {
+        if (a == null || a.Length == 0) return "示例关卡（场景里的数组 a 为空）";
+
+        int typeCount = LevelGenerator.CountTypes(a);
+        MinMovesSolver.MovePlan sample = MinMovesSolver.Solve(a, start, m);
+        if (!sample.Success)
+        {
+            return string.Format("示例关卡（场景固定配置：{0} 格 · {1} 种）", a.Length, typeCount);
+        }
+        return string.Format("示例关卡（场景固定配置：{0} 格 · {1} 种 · 最优 {2} 步）",
+                             a.Length, typeCount, sample.Steps);
+    }
+
+    /// <summary>已拿到的种类文本。</summary>
+    public string GetCollectedTypesText()
     {
         string text = "";
         for (int i = 0; i < typeList.Count; i++)
@@ -359,8 +619,8 @@ public class createfruit : MonoBehaviour
         return text.Length == 0 ? "无" : text;
     }
 
-    /// <summary>还缺的种类文本（供 HUD 显示）。</summary>
-    private string BuildMissingTypesText()
+    /// <summary>还缺的种类文本。</summary>
+    public string GetMissingTypesText()
     {
         string text = "";
         for (int i = 0; i < typeList.Count; i++)
@@ -373,138 +633,26 @@ public class createfruit : MonoBehaviour
     }
 
     /// <summary>把求解器给出的最优走法翻译成文字提示。</summary>
-    private string BuildHintText()
+    public string GetHintText()
     {
         if (!plan.Success) return "";
 
         if (plan.LeftSteps == 0 && plan.RightSteps == 0)
         {
-            return "最优解：0 步（起点格上的种类已经算拿到）";
+            return "最优解：0 步（起点格上的物品已经算拿到）";
         }
         if (plan.RightSteps == 0)
         {
-            return string.Format("最优解：{0} 步 —— 一直向左走 {1} 格就集齐了", plan.Steps, plan.LeftSteps);
+            return string.Format("最优解：{0} 步 —— 一直向左走 {1} 格就集齐了（不用回头）", plan.Steps, plan.LeftSteps);
         }
         if (plan.LeftSteps == 0)
         {
-            return string.Format("最优解：{0} 步 —— 一直向右走 {1} 格就集齐了", plan.Steps, plan.RightSteps);
+            return string.Format("最优解：{0} 步 —— 一直向右走 {1} 格就集齐了（不用回头）", plan.Steps, plan.RightSteps);
         }
         return plan.LeftFirst
             ? string.Format("最优解：{0} 步 —— 先向左 {1} 格再向右 {2} 格（左边来回 + 一路向右）",
                             plan.Steps, plan.LeftSteps, plan.RightSteps)
             : string.Format("最优解：{0} 步 —— 先向右 {1} 格再向左 {2} 格（右边来回 + 一路向左）",
                             plan.Steps, plan.RightSteps, plan.LeftSteps);
-    }
-
-    private GUIStyle titleStyle;
-    private GUIStyle centerStyle;
-
-    void OnGUI()
-    {
-        if (titleStyle == null)
-        {
-            titleStyle = new GUIStyle(GUI.skin.label);
-            titleStyle.fontStyle = FontStyle.Bold;
-
-            centerStyle = new GUIStyle(GUI.skin.label);
-            centerStyle.fontSize = 22;
-            centerStyle.fontStyle = FontStyle.Bold;
-            centerStyle.alignment = TextAnchor.MiddleCenter;
-            centerStyle.wordWrap = true;
-        }
-
-        DrawStatusPanel();
-        DrawTypeLegend();
-        DrawStepBar();
-
-        if (!string.IsNullOrEmpty(errorText))
-        {
-            DrawCenterBox("关卡数据有问题：\n" + errorText + "\n\n按 R 重新生成", Color.yellow);
-        }
-        else if (gameOver)
-        {
-            DrawCenterBox((win ? "【通过】\n" : "【失败】\n") + statusText + "\n\n按 R 重新开始",
-                          win ? new Color(0.4f, 1f, 0.4f) : new Color(1f, 0.45f, 0.45f));
-        }
-
-        if (toastTime > 0f && !string.IsNullOrEmpty(toastText))
-        {
-            Color old = GUI.color;
-            GUI.color = new Color(1f, 1f, 1f, Mathf.Clamp01(toastTime));
-            GUI.Label(new Rect(0f, Screen.height - 78f, Screen.width, 24f), toastText, centerStyle);
-            GUI.color = old;
-        }
-    }
-
-    /// <summary>左上角状态面板。</summary>
-    private void DrawStatusPanel()
-    {
-        GUILayout.BeginArea(new Rect(10f, 10f, 340f, 168f), GUI.skin.box);
-        GUILayout.Label(string.Format("剩余步数：{0} / {1}（最少 {2} 步）",
-                                      Mathf.Max(0, allowedSteps - usedSteps), allowedSteps, minSteps), titleStyle);
-        GUILayout.Label(string.Format("已集齐种类：{0} / {1}", collectedTypes.Count, requiredTypes), titleStyle);
-        GUILayout.Label("已拿到：" + BuildCollectedTypesText(), titleStyle);
-        GUILayout.Label("还缺：" + BuildMissingTypesText(), titleStyle);
-        GUILayout.Label("操作：← → / A D 移动　H 提示　R 重开", titleStyle);
-        if (showHint && plan.Success) GUILayout.Label(BuildHintText(), titleStyle);
-        GUILayout.EndArea();
-    }
-
-    /// <summary>状态面板下方的种类图例：拿到的是本色，没拿到的是灰色。</summary>
-    private void DrawTypeLegend()
-    {
-        const float boxSize = 18f;
-        const float stepX = 64f;
-        float x = 16f;
-        float y = 186f;
-
-        GUI.Label(new Rect(x, y, 260f, 20f), "种类图例（灰色 = 还没拿到）：", titleStyle);
-        y += 22f;
-
-        for (int i = 0; i < typeList.Count; i++)
-        {
-            int type = typeList[i];
-            bool got = collectedTypes.Contains(type);
-
-            Color old = GUI.color;
-            GUI.color = got ? FruitItem.GetTypeColor(type) : new Color(0.42f, 0.42f, 0.42f);
-            GUI.DrawTexture(new Rect(x + i * stepX, y, boxSize, boxSize), Texture2D.whiteTexture);
-            GUI.color = old;
-
-            GUI.Label(new Rect(x + i * stepX + boxSize + 4f, y - 2f, 42f, 22f),
-                      got ? type.ToString() : type + "?", titleStyle);
-        }
-    }
-
-    /// <summary>底部步数进度条。</summary>
-    private void DrawStepBar()
-    {
-        float progress = allowedSteps > 0 ? Mathf.Clamp01((float)usedSteps / allowedSteps) : 0f;
-        Rect bar = new Rect(Screen.width * 0.5f - 150f, Screen.height - 42f, 300f, 16f);
-
-        Color old = GUI.color;
-        GUI.color = new Color(0f, 0f, 0f, 0.35f);
-        GUI.DrawTexture(bar, Texture2D.whiteTexture);
-        GUI.color = (gameOver && !win) ? new Color(0.9f, 0.3f, 0.3f) : new Color(0.35f, 0.8f, 0.4f);
-        GUI.DrawTexture(new Rect(bar.x, bar.y, bar.width * progress, bar.height), Texture2D.whiteTexture);
-        GUI.color = old;
-
-        GUI.Label(new Rect(bar.x, bar.y - 22f, bar.width, 20f),
-                  string.Format("步数进度：{0} / {1}", usedSteps, allowedSteps), titleStyle);
-    }
-
-    /// <summary>屏幕中间的半透明提示框（胜负结果、关卡数据出错）。</summary>
-    private void DrawCenterBox(string text, Color color)
-    {
-        float width = Mathf.Min(Screen.width - 60f, 560f);
-        float height = 150f;
-        Rect rect = new Rect(Screen.width * 0.5f - width * 0.5f, Screen.height * 0.5f - height * 0.5f, width, height);
-
-        Color old = GUI.color;
-        GUI.color = new Color(0f, 0f, 0f, 0.75f);
-        GUI.DrawTexture(rect, Texture2D.whiteTexture);
-        GUI.color = color;
-        GUI.Label(new Rect(rect.x + 12f, rect.y + 12f, rect.width - 24f, rect.height - 24f), text, centerStyle);
-        GUI.color = old;
     }
 }
