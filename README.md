@@ -149,8 +149,8 @@ PickUpAdventure/
 ├─ PickUpAdventure.exe        ← 双击运行
 ├─ PickUpAdventure_Data/      ← 场景、贴图、程序集等资源
 ├─ MonoBleedingEdge/          ← 自带的 C# 运行时（所以无需外部依赖）
-├─ UnityPlayer.dll
-└─ UnityCrashHandler64.exe
+├─ TuanjiePlayer.dll
+└─ TuanjieCrashHandler64.exe
 ```
 
 打包参数：产品名“捡物品大冒险”、公司名 `ZhangYang`、**1600×900 窗口模式（可自由缩放）**、
