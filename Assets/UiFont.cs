@@ -30,6 +30,13 @@ public static class UiFont
     private const int MinFontPixels = 15;
 
     private static Font font;
+    private static string fontName = "未初始化";
+
+    /// <summary>实际用到的字体名，出问题时看日志里的这一项最容易定位。</summary>
+    public static string FontName
+    {
+        get { return fontName; }
+    }
 
     /// <summary>
     /// 界面缩放系数：1 表示 1080p，2 表示 4K。
@@ -91,10 +98,12 @@ public static class UiFont
             // 动态字体图集用双线性过滤，缩放时边缘更顺滑
             Material material = created.material;
             if (material != null && material.mainTexture != null) material.mainTexture.filterMode = FilterMode.Bilinear;
-            Debug.Log("[界面字体] 已启用系统动态字体，当前缩放 Scale = " + Scale.ToString("0.00") + "。");
+            fontName = string.IsNullOrEmpty(created.name) ? candidates[0] : created.name;
+            Debug.Log("[界面字体] 已启用系统动态字体：" + fontName + "，当前缩放 Scale = " + Scale.ToString("0.00") + "。");
             return created;
         }
 
+        fontName = "内置字体（没有找到系统字体）";
         Font fallback = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
         if (fallback == null) fallback = Resources.GetBuiltinResource<Font>("Arial.ttf");
         Debug.LogWarning("[界面字体] 没有找到系统字体，已回退到内置字体，中文可能显示为方块。");

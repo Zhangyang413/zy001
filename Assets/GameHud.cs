@@ -32,6 +32,21 @@ public class GameHud : MonoBehaviour
     private HudCommand pending = HudCommand.None;
 
     private float builtScale = -1f;
+
+    // ============================ 启动自检 ============================
+
+    /// <summary>
+    /// 启动自检：左上角这行字故意用 IMGUI 内置字体 + 固定屏幕坐标绘制，
+    /// 完全绕开动态字体、样式测量和面板排版：
+    ///   · 它能显示 → IMGUI 渲染本身没问题，问题只在界面排版上；
+    ///   · 它都看不见 → 问题在更底层，跟排版无关。
+    /// 顺带常驻显示当前窗口分辨率与实际使用的字体名，方便核对显示问题。
+    /// </summary>
+    private const bool SelfCheck = true;
+
+    private bool selfCheckLogged;
+    private bool gameRefWarned;
+    private bool menuPanelLogged;
     private GUIStyle titleStyle;
     private GUIStyle subTitleStyle;
     private GUIStyle sectionStyle;
@@ -119,7 +134,13 @@ public class GameHud : MonoBehaviour
             return height;
         }
 
-        height += row.style.CalcHeight(new GUIContent(row.text ?? ""), width);
+        // 关键：CalcHeight 对“刚创建好的动态字体”有可能返回 0（字形度量还没就绪）。
+        // 一旦所有行都返回 0，整块面板会塌成几十像素、内容全被挤没，
+        // 屏幕上只剩 DrawMenu 画的那层深色底，看上去就是“一片黑”。
+        // 所以这里给一个按字号推算的下限：无论字体度量正不正常，内容都保证显示得出来。
+        int fontSize = row.style.fontSize > 0 ? row.style.fontSize : UiFont.FontPx(17);
+        float lineHeight = Mathf.Max(row.style.CalcHeight(new GUIContent(row.text ?? ""), width), fontSize * 1.35f);
+        height += lineHeight;
         return height + row.style.margin.vertical;
     }
 
@@ -164,8 +185,10 @@ public class GameHud : MonoBehaviour
     private Rect DrawPanel(float centerX, float topY, float width, List<Row> rows, float alpha, bool centerY = false)
     {
         float pad = Px(16);
+        width = Mathf.Max(Px(200), width);                          // 窗口很窄时也不至于算出负宽度
         float inner = Mathf.Max(Px(160), width - pad * 2f);
         float height = Measure(rows, inner) + pad * 2f + Px(4);      // 多留一点余量，舍入误差也不会裁字
+        height = Mathf.Max(height, Px(200));                        // 兜底：面板最小高度，避免被算塌
         float y = centerY ? Mathf.Max(Px(8), (Screen.height - height) * 0.5f) : topY;
         Rect panel = new Rect(centerX - width * 0.5f, y, width, height);
 
@@ -254,7 +277,18 @@ public class GameHud : MonoBehaviour
 
     void OnGUI()
     {
-        if (game == null) return;
+        // 自检最先画：它不依赖后面任何一步，先确认“到底能不能画出东西”
+        DrawSelfCheck();
+
+        if (game == null)
+        {
+            if (!gameRefWarned)
+            {
+                gameRefWarned = true;
+                Debug.LogWarning("[界面自检] game 引用为空（createfruit 还没把引用赋过来），界面不绘制。");
+            }
+            return;
+        }
 
         EnsureStyles();
 
@@ -269,6 +303,33 @@ public class GameHud : MonoBehaviour
         finally
         {
             GUI.skin.font = skinFont;
+        }
+    }
+
+    /// <summary>
+    /// 启动自检：用 IMGUI 内置字体和固定屏幕坐标画一行字，
+    /// 绕开动态字体与面板排版，所以它的可见性直接代表“IMGUI 渲染是否正常”。
+    /// </summary>
+    private void DrawSelfCheck()
+    {
+        if (SelfCheck)
+        {
+            GUIStyle style = new GUIStyle(GUI.skin.label);
+            style.alignment = TextAnchor.LowerLeft;
+            style.normal.textColor = new Color(0.35f, 1f, 0.55f, 0.55f);
+            // 放左下角，避开游戏中的左上角 HUD、图例和底部步数条
+            GUI.Label(new Rect(4f, Screen.height - 20f, Screen.width - 8f, 18f),
+                      "[自检] " + Screen.width + "x" + Screen.height + "  字体=" + UiFont.FontName, style);
+
+            if (!selfCheckLogged && Event.current.type == EventType.Repaint)
+            {
+                selfCheckLogged = true;
+                Debug.Log("[界面自检] Screen=" + Screen.width + "x" + Screen.height
+                          + "  Scale=" + UiFont.Scale.ToString("0.00")
+                          + "  动态字体=" + UiFont.FontName
+                          + "  内置字体=" + (GUI.skin.font != null ? GUI.skin.font.name : "null")
+                          + "  最小行高=" + (UiFont.FontPx(17) * 1.35f).ToString("0.0"));
+            }
         }
     }
 
@@ -319,8 +380,20 @@ public class GameHud : MonoBehaviour
         rows.Add(Button(buttonStyle, "  " + game.GetSampleLevelSummary() + "　最佳 " + game.GetBestTimeText(-1), -1, false, Px(2)));
         rows.Add(Label(smallStyle, "难度 1/2/3 的物品数量、物品位置与人物位置都是随机生成的，每次开局都不一样。", Px(4)));
 
-        float width = Mathf.Min(Screen.width - Px(24), Px(820));
-        DrawPanel(Screen.width * 0.5f, 0f, width, rows, 0f, true);
+        float width = Mathf.Max(Px(240), Mathf.Min(Screen.width - Px(24), Px(820)));
+        Rect panel = DrawPanel(Screen.width * 0.5f, 0f, width, rows, 0f, true);
+
+        // 入口界面只记一次尺寸，方便从日志判断面板是不是被算塌了
+        if (!menuPanelLogged)
+        {
+            menuPanelLogged = true;
+            Debug.Log("[界面自检] 入口面板 宽=" + panel.width.ToString("0")
+                      + "  高=" + panel.height.ToString("0")
+                      + "  y=" + panel.y.ToString("0")
+                      + "  行数=" + rows.Count
+                      + "  标题字号=" + titleStyle.fontSize
+                      + "  标题字体=" + (titleStyle.font != null ? titleStyle.font.name : "null"));
+        }
 
         // 布局全部结束后再切关卡，避免 BeginArea / EndArea 不配对导致的 IMGUI 报错
         int action = ClickedAction(rows);

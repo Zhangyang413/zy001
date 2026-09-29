@@ -145,6 +145,8 @@ public class createfruit : MonoBehaviour
 
     void Start()
     {
+        EnsureWindowSize();
+
         // 挂上界面脚本（入口界面 / HUD / 结算都画在里面）
         hud = gameObject.GetComponent<GameHud>();
         if (hud == null) hud = gameObject.AddComponent<GameHud>();
@@ -154,8 +156,41 @@ public class createfruit : MonoBehaviour
         else StartSampleLevel();
     }
 
+    /// <summary>启动后需要复查窗口尺寸的帧数（约 2 秒）。</summary>
+    private int windowCheckFrames;
+    private bool windowSizeWarned;
+
+    /// <summary>
+    /// 窗口尺寸兜底。
+    /// 实测踩过的坑：PlayerSettings 里已经写了 1600x900 的窗口模式，
+    /// 可启动时窗口客户区仍然是 0×0（Screen 返回 1x1），
+    /// 界面全部画到屏幕外，表现就是“窗口打开了但一片黑”。
+    /// 这里显式再设一次；正常环境下尺寸本来就是对的，不会触发。
+    /// </summary>
+    private void EnsureWindowSize()
+    {
+        const int minWidth = 640;
+        const int minHeight = 360;
+        if (Screen.width >= minWidth && Screen.height >= minHeight) return;
+
+        if (!windowSizeWarned)
+        {
+            windowSizeWarned = true;
+            Debug.LogWarning("[窗口] 检测到窗口尺寸异常：" + Screen.width + "x" + Screen.height + "，正在设置为 1600x900。");
+        }
+        Screen.SetResolution(1600, 900, FullScreenMode.Windowed);
+    }
+
     void Update()
     {
+        // 启动后短时间内持续复查窗口尺寸：Screen.SetResolution 是异步生效的，
+        // 只在 Start 里设一次不够，窗口可能被别的设置又拉回 0x0。
+        if (windowCheckFrames < 120)
+        {
+            windowCheckFrames++;
+            EnsureWindowSize();
+        }
+
         if (toastTime > 0f) toastTime -= Time.deltaTime;
 
         if (phase == Phase.Menu)

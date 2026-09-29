@@ -78,7 +78,8 @@ Assets/
 ├─ FruitItem.cs         物品外观（种类、颜色、编号显示）
 ├─ UiFont.cs            界面高清字体（系统矢量动态字体）与分辨率缩放
 ├─ Editor/
-│  └─ BuildStandalone.cs  一键生成 Windows 独立运行包（.exe + _Data，双击即玩）
+│  ├─ BuildStandalone.cs  一键生成 Windows 独立运行包（.exe + _Data，双击即玩）
+│  └─ SceneBootstrap.cs   场景自举：打开工程时自动加载 SampleScene（否则点 Play 无显示）
 ├─ Resources/
 │  ├─ fruit.prefab      物品预制体（Cube + BoxCollider + Rigidbody + FruitItem）
 │  └─ Player.prefab     人物预制体（Cube + BoxCollider + Rigidbody + PlayerController）
@@ -155,3 +156,54 @@ PickUpAdventure/
 
 打包参数：产品名“捡物品大冒险”、公司名 `ZhangYang`、**1600×900 窗口模式（可自由缩放）**、
 脚本后端 **Mono2x**、API 兼容性 .NET Standard 2.0。
+
+> 注意 `defaultIsNativeResolution` 必须为 **关闭**：一旦开启，
+> 上面的 1600×900 会被直接忽略而改用显示器原生分辨率；
+> 实测在部分环境下会让窗口客户区变成 **0×0**（`Screen` 返回 1×1），
+> 界面全部画到屏幕外，表现就是“窗口打开了但一片黑”。
+> 运行时还有一层兜底：`createfruit.EnsureWindowSize()` 会在启动后 2 秒内
+> 反复检查窗口尺寸，发现异常就调用 `Screen.SetResolution(1600, 900, Windowed)` 修正。
+
+## 常见问题
+
+### 点 Play 之后 Game 视图什么都不显示
+
+团结引擎打开工程时如果**没有加载任何场景**（`Library/LastSceneManagerSetup.txt` 里
+场景路径是空的），点 Play 跑的就是一个空场景 —— 既不显示任何东西，也不会执行任何脚本
+（Console 里一条游戏日志都没有）。
+
+`Assets/Editor/SceneBootstrap.cs` 已经处理好了两件事：
+
+1. 打开工程时若没有已加载场景，会**自动打开 `SampleScene`**，Console 里会打印
+   `[场景自举] 打开工程时没有打开任何场景，已自动打开 …，现在可以直接点 Play。`；
+2. 菜单 **场景 / 打开并保存 SampleScene（规范化）** 可手动打开并重新保存场景，
+   把文件从旧版 Unity 的 `%TAG unity3d.com,2011` 规范成团结引擎的 `%TAG yousandi.cn,2023`，
+   同时让编辑器记下“上次打开的场景”。
+
+命令行批处理执行一次（要求工程处于关闭状态）：
+
+```powershell
+& "C:\Program Files\Tuanjie\Hub\Editor\2022.3.62t16\Editor\Tuanjie.exe" `
+  -batchmode -nographics -projectPath "e:\Learning Materials\course_new\unity\unity_folders\projects\My project1" `
+  -executeMethod SceneBootstrap.NormalizeScenes -logFile "E:\zy001_build\scene.log"
+```
+
+日志里出现 `SCENE_OK` 即成功。
+
+### 独立运行包打开后是一片黑
+
+先看窗口左下角那行绿色的自检信息，它会显示当前分辨率和实际使用的字体名：
+
+* **能看到自检行但看不到界面** → 面板排版问题；
+* **连自检行都看不到** → 窗口本身就是 0×0，见上面 `defaultIsNativeResolution` 那一节。
+
+运行日志（`%USERPROFILE%\AppData\LocalLow\ZhangYang\捡物品大冒险\Player.log`）
+里也会有关键数据，可直接搜 `界面自检`：
+
+```
+[界面字体] 已启用系统动态字体：Microsoft YaHei UI，当前缩放 Scale = 0.85。
+[界面自检] 入口面板 宽=697  高=698  y=101  行数=11  标题字号=29
+[界面自检] Screen=1600x900  Scale=0.85  动态字体=Microsoft YaHei UI
+```
+
+若 `Screen=` 后面是很小的数字（如 `1x1`），就是窗口尺寸异常，`EnsureWindowSize()` 会自动修正。

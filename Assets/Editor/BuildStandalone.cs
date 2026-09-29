@@ -89,6 +89,7 @@ public static class BuildStandalone
 
         PlayerSettings.defaultScreenWidth = 1600;
         PlayerSettings.defaultScreenHeight = 900;
+        PlayerSettings.defaultIsNativeResolution = false;
         PlayerSettings.fullScreenMode = FullScreenMode.Windowed;
         PlayerSettings.resizableWindow = true;
         PlayerSettings.runInBackground = true;
